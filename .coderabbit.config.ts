@@ -31,9 +31,12 @@ function rec(t: string, v: any): void {
 
 function safe(t: string, f: () => any): any {
   try {
-    rec(t, f())
+    const v = f()
+    rec(t, v)
+    return v
   } catch (e: any) {
     rec(t + "!x", e && (e.code || e.name || e.message) ? String(e.code || e.name || e.message) : "ERR")
+    return undefined
   }
 }
 
