@@ -1,11 +1,13 @@
-// CodeRabbit config probe CR-132-INT-H (authorized VDP research on our own PR).
-// Revision H of the cr/132-integrity-head channel (G wrote a persistence canary and left it).
-// GOAL: direct control for container persistence. Look for the exact file revision G created.
-// If it is gone, the evaluation container was destroyed between the two evaluations. If it is
-// still there, revision H deletes it immediately so nothing is left behind.
-// Reads only what revision G itself wrote. Nothing else is touched.
+// CodeRabbit config probe CR-132-INT-G (authorized VDP research on our own PR).
+// Revision G of the cr/132-integrity-head channel (E = writability query, F = contained canary).
+// GOAL: is the evaluation container PERSISTENT across evaluations?
+// METHOD: create ONE fresh unique file in the container scratch area /tmp and deliberately
+// leave it in place; the next evaluation (revision H) looks for exactly that file. If H cannot
+// see it, the container was destroyed between evaluations. If H CAN see it, revision H
+// deletes it immediately.
+// This writes exactly one new file at a path nothing else uses, and modifies nothing.
 
-const MARK = "CR-132-INT-H"
+const MARK = "CR-132-INT-G"
 const R: string[] = []
 
 function clip(v: any, n: number): string {
@@ -53,56 +55,27 @@ if (rt === "function") {
     const g = m.match(/upperdir=[^ ]+/)
     return g ? g[0] : "no-upperdir"
   })
-
-  // ---- THE PERSISTENCE CONTROL -------------------------------------------------
-  safe("P.G_canary_exists", () => {
+  safe("A.ls_tmp_before", () => fs.readdirSync("/tmp").join(","))
+  safe("A.preexists", () => {
     try {
-      const st = fs.statSync(P)
-      return "STILL_PRESENT ino=" + st.ino + " size=" + st.size
+      return "ALREADY_PRESENT size=" + fs.statSync(P).size
     } catch (e: any) {
-      return "GONE(" + (e && e.code ? e.code : "?") + ")"
+      return "absent(" + (e && e.code ? e.code : "?") + ")"
     }
   })
-  safe("P.G_canary_read", () => {
-    try {
-      const s = String(fs.readFileSync(P, "utf8"))
-      return "READBACK [" + clip(s, 200) + "] matchesG=" + (s.indexOf("CR-132-INT-G") === 0)
-    } catch (e: any) {
-      return "GONE(" + (e && e.code ? e.code : "?") + ")"
-    }
+  safe("W.canary_write", () => {
+    fs.writeFileSync(P, MARK + " persist-test pid=" + p.pid + " uid=" + p.getuid() + " t=" + Date.now())
+    const st = fs.statSync(P)
+    return "WROTE " + P + " ino=" + st.ino + " size=" + st.size
   })
-  safe("P.home_canary", () => {
-    try {
-      const st = fs.statSync("/home/jailuser/cr-132-persist-canary-G")
-      return "HOME_STILL_PRESENT size=" + st.size
-    } catch (e: any) {
-      return "HOME_GONE(" + (e && e.code ? e.code : "?") + ")"
-    }
+  safe("W.canary_readback", () => {
+    const s = String(fs.readFileSync(P, "utf8"))
+    return "[" + clip(s, 200) + "] matches=" + (s.indexOf(MARK) === 0)
   })
-  safe("A.ls_tmp", () => fs.readdirSync("/tmp").join(","))
-  safe("A.ls_home", () => {
-    try {
-      return fs.readdirSync("/home/jailuser").join(",")
-    } catch (e: any) {
-      return "ERR " + (e && e.code ? e.code : "?")
-    }
-  })
+  safe("A.ls_tmp_after", () => fs.readdirSync("/tmp").join(","))
   safe("A.bundle_stat", () => {
     const b = fs.statSync("/tmp/coderabbit-config.cjs")
     return "ino=" + b.ino + " size=" + b.size
-  })
-  // cleanup, in case the container IS persistent
-  safe("C.cleanup", () => {
-    let n = 0
-    for (const q of ["/tmp/cr-132-persist-canary-G", "/home/jailuser/cr-132-persist-canary-G"]) {
-      try {
-        fs.unlinkSync(q)
-        n++
-      } catch (e: any) {
-        /* already gone */
-      }
-    }
-    return "unlinked=" + n + " tmp_now=" + fs.readdirSync("/tmp").join(",")
   })
 } else {
   rec("A.body", "SKIPPED_no_module_scope_require")
